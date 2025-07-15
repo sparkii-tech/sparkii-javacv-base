@@ -1,0 +1,78 @@
+# .github/workflows/build-and-push.yml
+
+name: Build and Push JavaCV Base Image
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: 'Push image to ECR'
+        required: true
+        default: 'true'
+        type: choice
+        options: [ 'true', 'false' ]
+
+env:
+  ECR_REGISTRY: 194722441610.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REPOSITORY: sparkii-javacv-base # <-- 使用新的ECR仓库名
+  AWS_REGION: us-west-2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # <-- 确保在仓库设置中配置了此Secret
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+      
+    - name: Determine if should push
+      id: should_push
+      run: |
+        if [[ "${{ github.event_name }}" == "push" ]] || \
+           [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.push_image }}" == "true" ]]; then
+          echo "result=true" >> $GITHUB_OUTPUT
+        else
+          echo "result=false" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}
+        tags: |
+          type=raw,value=1.5.9 # javacv version
+          type=raw,value=latest
+          type=sha,format=short
+
+    - name: Build and push base image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile
+        push: ${{ steps.should_push.outputs.result }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        platforms: linux/amd64,linux/arm64 # <-- 可以根据需要添加多平台支持
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
